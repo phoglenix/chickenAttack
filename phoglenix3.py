@@ -91,7 +91,7 @@ class Player:
             # or we're near the end of the game
             if self.get_food(x2,y2) <= self.get_food(x,y) \
                or self.is_mine(x2,y2,guys) \
-               or self.turn_no > 750:
+               or self.turn_no > 500:
                 return ((x, y), actions.STAY)
         
         # Make pos less attractive so others spread out (occasionally)
