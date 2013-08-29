@@ -1,4 +1,14 @@
 # A very messy potential field-ish type implementation
+# Each turn, makes a grid of shortest distance from each tile to desirable
+# tiles (ie. not mine). Each chicken then simply looks at the surrounding 4
+# tiles and chooses whichever one has the lowest distance.
+# Never moves the last chicken off a tile (unless the tile next to it is not
+# mine and has better food in the first half of the game).
+# However, checks to see when another friendly chicken has moved into a tile -
+# then the last chicken there can be moved.
+# Started off quite simple but then tacked on things like preferring areas with
+# better food, areas left alone for a long time, areas with fewer chickens (both
+# mine and enemy chickens). Things got a bit messy.
 # Author: Glen Robertson (phoglenix)
 
 import actions
@@ -6,50 +16,49 @@ import heapq
 import random
 
 class Player:
-
-    #Get passed all the board information that never changes throughout the game.
-    #It is recommended that you store these in member variables since you will probably need to look at them later.
-    # PARAMS:
-
-    #  money_payout_rates:
-    #   This is a 50x50 2D array of floats between 0.0 and 1.0 that tell your bot how money per turn this spot produces
-    #   Food production is the inverse of money production and follow the formula food_payout_rate = 1.0 - money_payout_rate
-    #   This means areas that produce a lot of money, produce less food
-
-    #  my_spawn_point:
-    #   An (x, y) tuple of where your new chickens will hatch each turn
-
-    #  their_spawn_point:
-    #   An (x, y) tuple of where your opponent's chickens will hatch each turn
     def __init__(self, money_payout_rates, my_spawn_point, their_spawn_point):
         self.money_payout_rates = money_payout_rates
         self.my_spawn_point = my_spawn_point
         self.their_spawn_point = their_spawn_point
         self.width = len(self.money_payout_rates)
         self.height = len(self.money_payout_rates[0])
+        # Grid of amount of time each tile has been left unoccupied
         self.unoccupied_time = [ [0] * self.height for i in range(self.width) ]
+        # Turn number
         self.turn_no = 0
+        # Just the movement actions (ie ignore "STAY")
         self.MOVE_ACTIONS = actions.ALL_ACTIONS[1:]
-
+    
+    # Convenience method to check if a position is on the grid
     def in_bounds(self, x, y):
-        if not 0 <= x < self.width: # bounds
+        if not 0 <= x < self.width:
             return False
-        if not 0 <= y < self.height: # bounds
+        if not 0 <= y < self.height:
             return False
         return True
     
+    # Convenience method to get the food at a position
     def get_food(self, x, y):
         return 1.0 - self.money_payout_rates[x][y]
     
+    # Convenience method to check ownership at a position
     def is_mine(self, x, y, guys):
         return guys[x][y] and guys[x][y][1]
     
-    # Remove the guy from x,y and add the guy to x2,y2
-    def update_guys(self,x,y,x2,y2,guys):
+    # Remove one of my guys from x,y and add the guy to x2,y2
+    # For recording the effect of an order
+    # Will error if no guys were at x,y or enemy guys were at x,y
+    def update_guys(self, x, y, x2, y2, guys):
+        assert guys[x][y]
+        num_guys, is_mine = guys[x][y]
+        assert is_mine
+        assert num_guys > 0
         # Remove from source
-        guys[x][y] = (guys[x][y][0]-1, True)
-        if guys[x][y][0] == 0:
+        num_guys -= 1
+        if num_guys == 0:
             guys[x][y] = None
+        else:
+            guys[x][y] = (num_guys, is_mine)
         # Add to dest
         if guys[x2][y2]:
             num_guys, is_mine = guys[x2][y2]
@@ -60,37 +69,42 @@ class Player:
                 if num_guys == 0:
                     guys[x2][y2] = None
                     return
-            guys[x2][y2] = (num_guys, is_mine)
         else:
-            guys[x2][y2] = (1, True)
-            
+            num_guys, is_mine = 1, True
+        guys[x2][y2] = (num_guys, is_mine)
+    
+    # Find the best action for one chicken at x,y, given grid of current guys,
+    # grid of distances to desirable tiles, and whether this is the first
+    # chicken on the tile (which has to stay unless there's a vacant better-food
+    # spot neighbouring)
     def get_order(self, x, y, guys, dist_to_unowned, first):
-        action = None
+        best_action = None
         best_dist = 999
         best_food = 0.0
-        for m in self.MOVE_ACTIONS:
-            x2, y2 = actions.next_pos( (x,y), m)
+        for action in self.MOVE_ACTIONS:
+            x2, y2 = actions.next_pos( (x,y), action)
             if not self.in_bounds(x2, y2):
                 continue
             dist = dist_to_unowned[x2][y2]
-            if first: # First guy ignores distance, only interested in food and unowned tiles
+            # First ignores distance, only interested in food and unowned tiles
+            if first:
                 if self.is_mine(x2, y2, guys):
                     dist = 999
                 else:
                     dist = 0
-            food = self.get_food(x2,y2)
+            food = self.get_food(x2, y2)
             if dist < best_dist or (dist == best_dist and food > best_food):
-                action = m
+                best_action = action
                 best_dist = dist
                 best_food = food
         
-        x2, y2 = actions.next_pos( (x,y), action) # New pos
+        x2, y2 = actions.next_pos( (x,y), best_action) # New pos
         if first:
             # First guy can't move if it's to a worse food spot...
             # or my guys are there already
             # or we're near the end of the game
-            if self.get_food(x2,y2) <= self.get_food(x,y) \
-               or self.is_mine(x2,y2,guys) \
+            if self.get_food(x2, y2) <= self.get_food(x, y) \
+               or self.is_mine(x2, y2, guys) \
                or self.turn_no > 500:
                 return ((x, y), actions.STAY)
         
@@ -98,38 +112,16 @@ class Player:
         if random.random() > 0.9:
             dist_to_unowned[x2][y2] += 0.1
         # Update guys
-        self.update_guys(x,y,x2,y2,guys)
+        self.update_guys(x, y, x2, y2, guys)
         # Give the order
-        return ((x, y), action)
+        return ((x, y), best_action)
+    
     # Gets called each turn and where you decide where your chickens will go
-    # PARAMS:
-
-    #   guys:
-    #       A 50x50 2D matrix showing where all the guys are on the board.
-    #       An entry of 'None' indicates an unoccupied spot.
-    #       A space with chickens will be an object with "num_guys" and "is_mine" properties.
-    #
-
-    #   my_food:
-    #       A float showing how much food you have left over from last turn.
-
-    #   their_food:
-    #       A float showing how much food your opponent has left over from last run.
-
-    #   my_money:
-    #       A float showing how much money you will earn at market so far
-
-    #   their_money:
-    #       A float showing how much money your opponent will earn at market so far
-
-    # RETURN:
-    #   a python dict that takes a tuple ((x_pos, y_pos), direction) as a key and the number of guys to move as the value.
-    #   direction is defined in action.py
-
     def take_turn(self, guys, my_food, their_food, my_money, their_money):
+        # Update turn number
         self.turn_no += 1
         
-        ### update self.unoccupied_time: bias movement toward open spaces
+        # Update unoccupied_time: bias movement toward open spaces
         for x in range(self.width):
             for y in range(self.height):
                 if guys[x][y]:
@@ -138,27 +130,29 @@ class Player:
                     self.unoccupied_time[x][y] += 1
                     
         
-        ### Make a "map" of distance to closest non-owned square
+        # Make a grid of distance to closest non-owned tile
+        # This got twisted into becoming a general attractiveness measure
         dist_to_unowned = [ [999] * self.height for i in range(self.width) ]
-        open = [] # open list
+        open = [] # open list of seeds to grow a distance/attractiveness grid
         for x in range(self.width):
             for y in range(self.height):
+                # Longer unowned and higher food tiles are more attractive.
+                # Magic numbers seemed to help so it wouldn't be overwhelmed by
+                # attraction to unoccupied area
                 attractiveness = self.unoccupied_time[x][y] * (1 + self.get_food(x,y)) * 0.1
-                if not guys[x][y]:
-                    open.append( (-attractiveness,x,y) )
-                else:
-                    num_guys, is_mine = guys[x][y]
-                    if not is_mine:
-                        open.append( (-attractiveness,x,y) )
+                # Only add non-owned tiles
+                if not self.is_mine(x, y, guys):
+                    # Attraction is represented as negative distance
+                    open.append( (-attractiveness, x, y) )
         
         for d, x, y in open:
             dist_to_unowned[x][y] = d
-        # Djikstra to fill out map
+        # Djikstra's algorithm to fill out grid of shortest distances
         heapq.heapify(open)
         while len(open) > 0:
             d, x, y = heapq.heappop(open)
             if dist_to_unowned[x][y] < d:
-                continue # Better dist found already
+                continue # Shorter dist found already
             for m in self.MOVE_ACTIONS:
                 x2, y2 = actions.next_pos( (x,y), m)
                 if not self.in_bounds(x2, y2):
@@ -175,28 +169,24 @@ class Player:
                 if dist_to_unowned[x2][y2] > d + cost:
                     dist_to_unowned[x2][y2] = d + cost
                     heapq.heappush(open, (d + cost, x2, y2))
-        # for y in range(self.height):
-            # for x in range(self.width):
-                # print dist_to_unowned[x][y],
-            # print ''
         
-        
-
-        orders = {}
-        all_guys = [] # in order of best food, most food at start
-        still_can_move = {}
+        # Make a list of all my guys, sorted by most to least food
+        # Sorting was originally to help guys move toward higher food but I
+        # don't think it's actually necessary any more.
+        all_guys = []
         for x in range(self.width):
             for y in range(self.height):
-                if not guys[x][y]: continue
-
+                if not self.is_mine(x, y, guys): continue
                 num_guys, is_mine = guys[x][y]
-                if not is_mine: continue
-                
                 all_guys.append( (self.get_food(x,y), x, y, num_guys) )
         all_guys.sort(reverse=True)
         
+        # Get the best order for each guy. Record where guys still can move
+        # (max of 1 guy still can move in each square as only the first guy
+        # might choose to STAY)
+        orders = {}
+        still_can_move = {}
         for unused, x, y, num_guys in all_guys:
-            # Move guys
             for i in range(num_guys):
                 # Get the best order for this guy
                 position, action = self.get_order(x, y, guys, dist_to_unowned, i == 0)
@@ -230,10 +220,3 @@ class Player:
                 open.append(order)
         
         return orders
-
-        
-        
-        
-        
-        
-        
