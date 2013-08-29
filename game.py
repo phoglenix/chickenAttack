@@ -13,7 +13,7 @@ import actions
 NUM_TURNS = 1000
 STARTING_MONEY = 100
 
-PRINT_TRACE = False
+PRINT_TRACE = True
 
 if len(sys.argv) != 3:
     print "Usage: %s player1_module player2_module" % sys.argv[0]

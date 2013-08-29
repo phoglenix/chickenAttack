@@ -1,2 +1,3 @@
 *.pyc
 game_log.js
+.DS_Store
